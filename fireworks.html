@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>はなび</title>
+<!--
+  はなび（ボールを当てたところ・触れたところに、花火が上がる）
+  ・16:9 の画面いっぱいが夜空。どこに当たっても、その位置で花火が開く（画面全体がタッチの場所）
+  ・ボールの当たりは 0.1 秒ほどの短いタッチ → pointerdown の瞬間に開く。はね返りで 2 回開かない（消えてから 0.15 秒以内に同じ所なら 1 回）
+  ・触れたままのときは 1 回だけ。触れたまま大きく動くと、通った所に次々と開く
+  ・花火は球のように 3 次元に広がる（火の粉は球の面に散らばって飛び、手前の火の粉は大きく明るく、奥の火の粉は小さく暗く見える。
+    輪は傾いて楕円に見える。重さは画面の下向き）
+  ・花火の数・火の粉の数には上限があり、超えたら古い花火から消す（重くならないように）
+  ・音は、本物の操作（クリック・タッチ・キー）があってから鳴る。右上のボタンで音のあり・なし（マウスでだけ切り替わる）
+  ・外部 URL（本物のタッチ）とローカルファイル（プログラムが送るタッチ）の両方で動く。調整する数字はスクリプトの先頭
+-->
+<style>
+  :root {
+    --sky-top: #0b1036;     /* 藍 */
+    --sky-low: #2a1e4a;     /* 地平線の宵 */
+    --moon: #e8edf5;        /* 月白（文字） */
+    --moon-dim: #aab3cb;
+    --yamabuki: #f2b736;    /* 山吹（ボタン・灯り） */
+    --title: 4vmin;
+    --text: 2.2vmin;
+    --small: 1.7vmin;
+    --serif: "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Noto Serif JP", "Noto Serif CJK JP", "BIZ UDPMincho", serif;
+  }
+  /* 画面を動かさない（縦・横のスクロール、拡大、端を引っぱったときの揺れ、横スワイプの「戻る」、長押し、文字の選択） */
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    background: var(--sky-top);
+  }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* タイトルと説明: 左上に縦書きで小さく（タッチの邪魔をしない） */
+  .titles {
+    position: fixed; top: 3vmin; left: 3vmin; display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 1.4vmin;
+    writing-mode: horizontal-tb; pointer-events: none; color: var(--moon); font-family: var(--serif);
+  }
+  .titles h1, .titles p { writing-mode: vertical-rl; margin: 0; }
+  .titles h1 { font-size: var(--title); font-weight: 600; letter-spacing: .9vmin; line-height: 1; }
+  .titles p { font-size: var(--text); line-height: 1.75; letter-spacing: .3vmin; color: var(--moon-dim); }
+
+  /* 音のあり・なし: 右上の隅に小さく（本物のマウスでだけ切り替わる） */
+  .controls { position: fixed; top: 3vmin; right: 3vmin; display: flex; flex-direction: column; align-items: flex-end; gap: 1vmin; font-family: var(--serif); }
+  .controls button {
+    font: 500 var(--small)/1 var(--serif); color: var(--moon); background: rgba(11, 16, 54, .55); cursor: pointer;
+    border: .15vmin solid rgba(232, 237, 245, .45); border-radius: 3vmin; padding: 1vmin 2vmin; width: 13vmin; letter-spacing: .2vmin;
+  }
+  .controls button[aria-pressed="false"] { color: var(--moon-dim); border-color: rgba(170, 179, 203, .3); }
+  .controls button:focus-visible { outline: .3vmin solid var(--yamabuki); outline-offset: .3vmin; }
+  .status { width: 40vmin; text-align: right; font-size: var(--small); color: var(--yamabuki); min-height: 1.4em; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="sky" aria-hidden="true"></canvas>
+<canvas id="fx" aria-hidden="true"></canvas>
+<div class="titles">
+  <h1>はなび</h1>
+  <p>ボールを当てると、<br>そこに花火があがります</p>
+</div>
+<div class="controls">
+  <button id="sound" type="button" aria-pressed="true">音あり</button>
+  <div class="status" id="status" role="status"></div>
+</div>
+<script>
+'use strict';
+// ============================================================================
+// 調整する数字（大きさ・距離は vmin = 画面の短い辺の 1%、時間は秒）
+// ============================================================================
+const BURST_SIZE = 22;       // 花火の大きさ（開いたときの半径）[vmin]
+const DEDUPE_TIME = 0.15;    // タッチが消えてから、この秒数の間に同じ所に現れたタッチは、1 回の当たりにする（はね返り・一瞬の見失い）
+const DEDUPE_DIST = 8;       // 「同じ所」とみなす距離 [vmin]
+const MOVE_BURST = 20;       // 触れたまま、この距離 [vmin] 動くたびに次の花火を開く（0 = 動いても開かない）
+const MAX_BURSTS = 40;       // 同時に出す花火の上限（超えたら古い花火から消す）
+const MAX_PARTICLES = 4500;  // 同時に出す火の粉の上限（超えたら古い花火から消す）
+const IDLE_DEMO = 12;        // 誰も当てないとき、この秒数ごとに小さな花火を上げて誘う（0 = 上げない）
+const DEPTH = 3.2;           // 奥行きの付け方（花火の半径の何倍の距離から見ているか。小さいほど手前と奥の大きさの差が大きい）
+const DEPTH_SHADE = 0.55;    // 奥の火の粉をどれだけ暗くするか（0 = 暗くしない 〜 1）
+const VOLUME = 0.8;          // 音の大きさ（0〜1）
+
+const vmin = () => Math.min(innerWidth, innerHeight) / 100;
+
+// ============================================================================
+// 夜空（藍のグラデーション・星・山並みと家並みの影絵。大きさが変わったときだけ描き直す）
+// ============================================================================
+const sky = document.getElementById('sky'), fx = document.getElementById('fx');
+const sctx = sky.getContext('2d'), ctx = fx.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+let seed = 7;
+const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647); // 毎回同じ星空・家並みになる乱数
+
+function drawSky() {
+  seed = 7;
+  const g = sctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#070b2a'); g.addColorStop(.55, '#0b1036'); g.addColorStop(.86, '#2a1e4a'); g.addColorStop(1, '#3a2752');
+  sctx.fillStyle = g; sctx.fillRect(0, 0, W, H);
+  const u = Math.min(W, H) / 100;
+  for (let i = 0; i < 220; i++) { // 星（上ほど多く）
+    const x = rand() * W, y = Math.pow(rand(), 1.6) * H * .8, r = (rand() * .12 + .05) * u;
+    sctx.fillStyle = `rgba(232,237,245,${(rand() * .5 + .15).toFixed(2)})`;
+    sctx.beginPath(); sctx.arc(x, y, r, 0, Math.PI * 2); sctx.fill();
+  }
+  const ridge = (base, amp, color, step) => { // 山並み
+    sctx.fillStyle = color; sctx.beginPath(); sctx.moveTo(0, H);
+    for (let x = 0; x <= W + step; x += step) sctx.lineTo(x, H - base - amp * (Math.sin(x / W * 5.1 + base) * .6 + Math.sin(x / W * 13.7) * .25 + rand() * .15));
+    sctx.lineTo(W, H); sctx.closePath(); sctx.fill();
+  };
+  ridge(H * .085, H * .045, '#141235', W / 40);
+  ridge(H * .045, H * .02, '#0a0a22', W / 60);
+  let x = W * .04; // 家並み（窓にかすかな灯り）
+  while (x < W * .96) {
+    const w = (rand() * 3 + 2.5) * u, h = (rand() * 2.5 + 2) * u, y = H - H * .03 - h;
+    sctx.fillStyle = '#07071a'; sctx.fillRect(x, y, w, h + H * .03);
+    sctx.beginPath(); sctx.moveTo(x - .5 * u, y); sctx.lineTo(x + w / 2, y - h * .45); sctx.lineTo(x + w + .5 * u, y); sctx.fill();
+    if (rand() < .55) { sctx.fillStyle = `rgba(242,183,54,${(rand() * .35 + .25).toFixed(2)})`; sctx.fillRect(x + w * .3, y + h * .35, w * .22, h * .25); }
+    x += w + (rand() * 6 + 1) * u;
+  }
+}
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  for (const c of [sky, fx]) { c.width = W; c.height = H; }
+  drawSky();
+}
+addEventListener('resize', resize);
+resize();
+
+// ============================================================================
+// 花火（菊・牡丹・柳・輪・千輪。火の粉は fx に描き、少しずつ消して尾を引かせる）
+//   火の粉は、花火の中心からの 3 次元の位置 (x, y, z) で動かす（z は奥向き。重さは y の下向き）。
+//   描くときは遠近法で画面に写す: 手前（z < 0）ほど外側に大きく明るく、奥（z > 0）ほど内側に小さく暗く
+// ============================================================================
+const COLORS = { // 紅・山吹・若竹・空・藤・銀（色相・彩度・明るさ）
+  beni: [352, 85, 62], yamabuki: [41, 92, 60], wakatake: [150, 60, 58], sora: [204, 95, 64], fuji: [266, 75, 72], gin: [215, 25, 92],
+};
+const PALETTE = Object.values(COLORS);
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+let bursts = [];          // { parts: [火の粉], flash, x, y }
+let particleCount = 0;
+
+/** 火の粉: 3 次元の位置 pos [x, y, z]（花火の中心から）から、向き dir（長さ 1）へ速さ speed で飛ぶ */
+function spark(pos, dir, speed, color, opts = {}) {
+  return {
+    x: pos[0], y: pos[1], z: pos[2], vx: dir[0] * speed, vy: dir[1] * speed, vz: dir[2] * speed, sx: null, sy: null,
+    age: 0, life: opts.life || 1.6, color, change: opts.change || null, drag: opts.drag ?? 2.2, gravity: opts.gravity ?? 9,
+    size: opts.size || .32, trail: opts.trail ?? 1, glitter: opts.glitter || false, child: opts.child || null,
+  };
+}
+
+// ---- 3 次元の向き ----
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+/** 向きをランダムに回す関数（毎回ちがう向きの球・輪にする） */
+function randomTurn() {
+  const [a, b, c] = [Math.random(), Math.random(), Math.random()].map((r) => r * Math.PI * 2);
+  const [ca, sa, cb, sb, cc, sc] = [Math.cos(a), Math.sin(a), Math.cos(b), Math.sin(b), Math.cos(c), Math.sin(c)];
+  return ([x, y, z]) => {
+    let y1 = y * ca - z * sa, z1 = y * sa + z * ca;      // x のまわり
+    let x2 = x * cb + z1 * sb, z2 = -x * sb + z1 * cb;   // y のまわり
+    return [x2 * cc - y1 * sc, x2 * sc + y1 * cc, z2];   // z のまわり
+  };
+}
+/** 球の面に、ほぼ等間隔に並ぶ n 個の向き（本物の花火の星のように、すき間なく散らばる） */
+function sphereDirs(n) {
+  const turn = randomTurn(), ga = Math.PI * (3 - Math.sqrt(5)), out = [];
+  for (let i = 0; i < n; i++) {
+    const z = 1 - (2 * i + 1) / n, r = Math.sqrt(1 - z * z), a = i * ga + (Math.random() - .5) * .25;
+    out.push(norm(turn([r * Math.cos(a), r * Math.sin(a), z])));
+  }
+  return out;
+}
+/** 輪: 見る向きから 35〜70° 傾いた面の上の n 個の向き（楕円に見える） */
+function ringDirs(n) {
+  const tilt = (35 + Math.random() * 35) * Math.PI / 180, az = Math.random() * Math.PI * 2;
+  const nrm = [Math.sin(tilt) * Math.cos(az), Math.sin(tilt) * Math.sin(az), Math.cos(tilt)]; // 輪の面の向き
+  const a = norm(cross(nrm, [0, 0, 1])), b = cross(nrm, a), out = [];
+  for (let i = 0; i < n; i++) { const t = (i / n) * Math.PI * 2; out.push([a[0] * Math.cos(t) + b[0] * Math.sin(t), a[1] * Math.cos(t) + b[1] * Math.sin(t), a[2] * Math.cos(t) + b[2] * Math.sin(t)]); }
+  return out;
+}
+
+/** (x, y) [CSS px] に花火を開く。kind を省くと種類はおまかせ。small: 誘いの小さな花火 */
+function launch(x, y, kind, small) {
+  const u = vmin(), X = x * DPR, Y = y * DPR, R = BURST_SIZE * u * DPR * (small ? .55 : 1) * (.85 + Math.random() * .3);
+  kind = kind || pick(['kiku', 'kiku', 'botan', 'yanagi', 'wa', 'senrin']);
+  const c1 = pick(PALETTE), c2 = pick(PALETTE.filter((c) => c !== c1));
+  const parts = [], O = [0, 0, 0];
+  const shell = (n, speedOf, color, opts) => { sphereDirs(n).forEach((d, i) => parts.push(spark(O, d, speedOf(i), color, opts))); };
+  const k = 2.2, v = R * k; // 速さ v・空気の抵抗 k で、だいたい半径 R まで広がる
+  const g = 9 * u * DPR;
+  if (kind === 'kiku') {        // 菊: 尾を引き、終わりぎわに色が変わる。中に小さな芯（ひとまわり小さい球）
+    shell(small ? 60 : 130, () => v * (.9 + Math.random() * .1), c1, { change: c2, life: 1.7, gravity: g, trail: 1 });
+    shell(small ? 18 : 40, () => v * (.42 + Math.random() * .05), c2, { life: 1.3, gravity: g, trail: .7, size: .28 });
+  } else if (kind === 'botan') { // 牡丹: 尾の短い、丸い光の粒
+    shell(small ? 60 : 130, () => v * (.9 + Math.random() * .1), c1, { life: 1.4, gravity: g, trail: .25, size: .42 });
+  } else if (kind === 'yanagi') { // 柳: 金色で、長くゆっくり垂れる
+    shell(small ? 50 : 100, () => v * (.6 + Math.random() * .15), COLORS.yamabuki, { life: 3, drag: 1.6, gravity: g * 2.2, glitter: true, size: .28 });
+  } else if (kind === 'wa') {     // 輪: 傾いたきれいな輪と、中の小さな菊
+    for (const d of ringDirs(small ? 48 : 90)) parts.push(spark(O, d, v, c1, { life: 1.6, gravity: g * .6, trail: .8 }));
+    shell(small ? 16 : 30, () => v * .35 * (.85 + Math.random() * .15), c2, { life: 1.2, gravity: g });
+  } else {                        // 千輪: 小さな花がいくつも、少し遅れて開く
+    shell(small ? 6 : 10, () => v * .6 * (.8 + Math.random() * .2), COLORS.gin, { life: .55, gravity: g * .5, trail: .6, child: pick(PALETTE) });
+  }
+  addBurst({ parts, x: X, y: Y, r: R, f: R * DEPTH, flash: 0, color: c1, small });
+  boom(x, kind === 'senrin' ? .55 : small ? .35 : 1);
+}
+
+/** 上限を超えないように、古い花火から消して足す */
+function addBurst(b) {
+  while (bursts.length && (bursts.length >= MAX_BURSTS || particleCount + b.parts.length > MAX_PARTICLES)) {
+    particleCount -= bursts.shift().parts.length;
+  }
+  bursts.push(b); particleCount += b.parts.length;
+}
+
+/** 千輪の小さな花（親の火の粉 p の 3 次元の位置で、小さな球に開く。親の花火の火の粉として足す。
+ *  火の粉の上限を超えるときは、足さない＝ほかの花火を消さない） */
+function childBurst(b, p, color, size) {
+  if (particleCount + 18 > MAX_PARTICLES) return;
+  const v = size * 2.6;
+  for (const d of sphereDirs(18)) {
+    const q = spark([p.x, p.y, p.z], d, v * (.85 + Math.random() * .15), color, { life: .9, gravity: 6 * vmin() * DPR, trail: .7, size: .26 });
+    q.sx = p.sx; q.sy = p.sy; // 尾は親の火の粉の所から引く
+    b.parts.push(q);
+  }
+  particleCount += 18;
+}
+
+let last = performance.now(), idleAt = performance.now();
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  // 前の絵を少しずつ消す（尾を引く）
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = `rgba(0,0,0,${(1 - Math.exp(-dt * 11)).toFixed(3)})`;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter';
+  const u = vmin() * DPR;
+  const born = [];
+  for (const b of bursts) {
+    // 開いた瞬間の光（空も少し明るくなる）
+    if (b.flash < .22) {
+      const a = 1 - b.flash / .22, [h, s, l] = b.color;
+      const r1 = b.r * (b.small ? .45 : .6) * (1 + b.flash * 2);
+      const gr = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r1);
+      gr.addColorStop(0, `hsla(${h},${s}%,${Math.min(95, l + 25)}%,${(.55 * a).toFixed(3)})`); gr.addColorStop(1, `hsla(${h},${s}%,${l}%,0)`);
+      ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(b.x, b.y, r1, 0, Math.PI * 2); ctx.fill();
+      b.flash += dt;
+    }
+    for (const p of b.parts) {
+      if (p.age >= p.life) continue;
+      p.age += dt;
+      const f = Math.exp(-p.drag * dt);
+      p.vx *= f; p.vy = p.vy * f + p.gravity * dt; p.vz *= f;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+      const t = p.age / p.life;
+      if (p.child && t >= 1) { born.push([b, p, p.child, b.r * .35]); continue; }
+      // 遠近法で画面に写す（k: 手前ほど大きい倍率）。前の位置から今の位置へ尾を引く
+      const k = b.f / Math.max(b.f * .35, b.f + p.z);
+      const sx = b.x + p.x * k, sy = b.y + p.y * k;
+      const px = p.sx ?? b.x, py = p.sy ?? b.y;
+      p.sx = sx; p.sy = sy;
+      const depth = Math.max(-1, Math.min(1, p.z / b.r)); // -1 = 手前 … 1 = 奥
+      const c = p.change && t > .62 ? p.change : p.color;
+      let alpha = t < .1 ? 1 : Math.max(0, 1 - Math.pow((t - .1) / .9, 1.6));
+      alpha *= 1 - DEPTH_SHADE * (depth + 1) / 2; // 奥ほど暗く
+      if (p.glitter && Math.random() < .35) alpha *= .25;
+      const light = Math.max(20, Math.min(96, c[2] + (1 - t) * 18 - depth * 8)); // 手前ほど白っぽく
+      ctx.strokeStyle = ctx.fillStyle = `hsla(${c[0]},${c[1]}%,${light}%,${alpha.toFixed(3)})`;
+      const w = p.size * u * (1 - t * .5) * k * k; // 手前ほど太く
+      if (p.trail > .3) { ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(sx, sy); ctx.stroke(); }
+      else { ctx.beginPath(); ctx.arc(sx, sy, w * .9, 0, Math.PI * 2); ctx.fill(); }
+    }
+  }
+  for (const [b, p, c, s] of born) childBurst(b, p, c, s);
+  // 終わった花火を片付ける
+  const alive = [];
+  for (const b of bursts) {
+    if (b.parts.some((p) => p.age < p.life)) alive.push(b); else particleCount -= b.parts.length;
+  }
+  bursts = alive;
+  // 誰も当てないときは、ときどき小さな花火で誘う
+  if (IDLE_DEMO > 0 && !tracks.size && now - idleAt > IDLE_DEMO * 1000) {
+    idleAt = now;
+    launch(innerWidth * (.25 + Math.random() * .5), innerHeight * (.2 + Math.random() * .3), pick(['kiku', 'botan', 'wa']), true);
+  }
+  requestAnimationFrame(frame);
+}
+
+// ============================================================================
+// 音（ドン、という音。左右の位置に合わせて聞こえる）
+//   ブラウザは、本物の操作（isTrusted が true）があるまで音を出さない。ページを開いたときに AudioContext を作り、
+//   本物の操作があるたびに開始を試す。始まっていない間は「画面を一度クリックすると音が出ます」と出す（タッチは待たない）
+// ============================================================================
+let audio = null, master = null, noise = null, soundOn = true;
+const recent = []; // 最近鳴らした時刻（一度にたくさん当たったときに、音が割れないように間引く）
+const LOCKED_TEXT = '画面を一度クリックすると音が出ます';
+function setupAudio() {
+  const A = window.AudioContext || window.webkitAudioContext;
+  if (!A) return;
+  audio = new A();
+  master = audio.createGain(); master.gain.value = VOLUME;
+  const comp = audio.createDynamicsCompressor(); master.connect(comp); comp.connect(audio.destination);
+  noise = audio.createBuffer(1, Math.round(audio.sampleRate * 1.4), audio.sampleRate);
+  const d = noise.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 1.5);
+  audio.addEventListener('statechange', showAudioState);
+  audio.resume().then(showAudioState, () => {});
+  setTimeout(showAudioState, 300);
+}
+function showAudioState() {
+  document.getElementById('status').textContent = soundOn && audio && audio.state !== 'running' ? LOCKED_TEXT : '';
+}
+function unlockAudio(e) { if (e.isTrusted && audio) audio.resume().then(showAudioState, () => {}); }
+for (const type of ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown']) document.addEventListener(type, unlockAudio, true);
+
+/** ドン（x: 画面の横の位置 [CSS px]、big: 大きさ 0〜1） */
+function boom(x, big) {
+  if (!soundOn || !audio || audio.state !== 'running') return; // 許可が下りるまでは鳴らさない（待たない）
+  const t = audio.currentTime;
+  while (recent.length && t - recent[0] > .15) recent.shift();
+  if (recent.length >= 6) return;
+  recent.push(t);
+  const out = audio.createStereoPanner ? audio.createStereoPanner() : audio.createGain();
+  if (out.pan) out.pan.value = Math.max(-1, Math.min(1, (x / innerWidth) * 2 - 1)) * .7;
+  out.connect(master);
+  const src = audio.createBufferSource(); src.buffer = noise;
+  const lp = audio.createBiquadFilter(); lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(2200, t); lp.frequency.exponentialRampToValueAtTime(160, t + .45);
+  const g = audio.createGain();
+  g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.8 * big, t + .006); g.gain.exponentialRampToValueAtTime(.0001, t + .9 + big * .4);
+  src.connect(lp); lp.connect(g); g.connect(out); src.start(t); src.stop(t + 1.4);
+  const o = audio.createOscillator(), og = audio.createGain(); // 胸に響く低い音
+  o.frequency.setValueAtTime(95, t); o.frequency.exponentialRampToValueAtTime(38, t + .3);
+  og.gain.setValueAtTime(.0001, t); og.gain.exponentialRampToValueAtTime(.7 * big, t + .008); og.gain.exponentialRampToValueAtTime(.0001, t + .35);
+  o.connect(og); og.connect(out); o.start(t); o.stop(t + .4);
+}
+
+// ============================================================================
+// 音のあり・なし（本物のマウスでだけ切り替わる。センサー・タッチでは変わらない）
+// ============================================================================
+const controls = document.querySelector('.controls');
+const soundBtn = document.getElementById('sound');
+const notRealMouse = (e) => !e.isTrusted || (e.pointerType && e.pointerType !== 'mouse'); // キーボードで押したとき（pointerType が空）は通す
+controls.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+controls.addEventListener('pointerdown', (e) => { if (notRealMouse(e)) e.preventDefault(); }, true);
+controls.addEventListener('click', (e) => { if (notRealMouse(e)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+soundBtn.addEventListener('click', () => {
+  soundOn = !soundOn;
+  soundBtn.setAttribute('aria-pressed', String(soundOn));
+  soundBtn.textContent = soundOn ? '音あり' : '音なし';
+  showAudioState();
+});
+
+// ============================================================================
+// 画面を動かさない
+// ============================================================================
+document.addEventListener('scroll', (e) => {
+  if (e.target === document) { if (scrollX || scrollY) scrollTo(0, 0); return; }
+  const el = e.target; if (el.scrollTop || el.scrollLeft) { el.scrollTop = 0; el.scrollLeft = 0; }
+}, true);
+for (const type of ['contextmenu', 'selectstart', 'dragstart', 'dblclick', 'gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
+// ============================================================================
+// 当たり（反応は pointer イベントだけ。document でまとめて受け取り、何本でも同時に扱う）
+//   ・pointerdown の瞬間に、その位置で花火を開く（離れるのも、動くのも待たない）
+//   ・触れている所と、タッチが消えてから DEDUPE_TIME 秒の間のその所（DEDUPE_DIST 以内）に現れた新しいタッチは、
+//     同じ当たりとして花火を開かない（はね返り・一瞬の見失いで 2 回開かない）
+//   ・触れたままなら 1 回だけ。触れたまま MOVE_BURST 動くたびに、通った所に次の花火
+//   ・すでに押している番号の pointerdown がもう一度届いたら、押し直しではなく動きとして扱う
+// ============================================================================
+const tracks = new Map();  // pointerId → { x, y（最後に花火を開いた位置）, spot（下の spots の、このタッチの所） }
+const spots = [];          // 当たりの所 { x, y, until（この時刻〔秒〕まで同じ当たりとみなす。触れている間は Infinity） }
+
+/** (x, y) のすぐ近くに、触れている・消えたばかりのタッチがあるか（except: 自分の所は除く） */
+function nearSpot(x, y, except) {
+  const now = performance.now() / 1000, d = DEDUPE_DIST * vmin();
+  for (let i = spots.length - 1; i >= 0; i--) if (spots[i].until < now) spots.splice(i, 1);
+  return spots.some((s) => s !== except && Math.hypot(s.x - x, s.y - y) <= d);
+}
+/** (x, y) で花火を開く（近くに同じ当たりがあれば開かない） */
+function hit(x, y, except) {
+  if (nearSpot(x, y, except)) return false;
+  idleAt = performance.now();
+  launch(x, y);
+  return true;
+}
+function moveTrack(t, x, y) {
+  t.spot.x = x; t.spot.y = y; // 触れている所は、タッチについていく
+  if (!(MOVE_BURST > 0)) return;
+  const step = MOVE_BURST * vmin();
+  let dx = x - t.x, dy = y - t.y, dist = Math.hypot(dx, dy);
+  while (dist >= step) { // 速く動いて飛び越えた所も、通った順に開く
+    t.x += (dx / dist) * step; t.y += (dy / dist) * step;
+    hit(t.x, t.y, t.spot);
+    dx = x - t.x; dy = y - t.y; dist = Math.hypot(dx, dy);
+  }
+}
+document.addEventListener('pointerdown', (e) => {
+  const old = tracks.get(e.pointerId);
+  if (old) { moveTrack(old, e.clientX, e.clientY); return; }
+  const realMouse = e.isTrusted && e.pointerType === 'mouse';
+  if (realMouse && (e.button !== 0 || e.target.closest('.controls'))) return;
+  e.preventDefault();
+  const spot = { x: e.clientX, y: e.clientY, until: Infinity };
+  const t = { x: e.clientX, y: e.clientY, spot };
+  hit(e.clientX, e.clientY, spot);
+  spots.push(spot);
+  tracks.set(e.pointerId, t);
+});
+document.addEventListener('pointermove', (e) => { const t = tracks.get(e.pointerId); if (t) moveTrack(t, e.clientX, e.clientY); });
+const end = (e) => {
+  const t = tracks.get(e.pointerId);
+  if (!t) return;
+  t.spot.until = performance.now() / 1000 + DEDUPE_TIME; // 消えてから DEDUPE_TIME 秒は、同じ当たりとみなす
+  tracks.delete(e.pointerId);
+};
+document.addEventListener('pointerup', end);
+document.addEventListener('pointercancel', end);
+
+setupAudio();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
