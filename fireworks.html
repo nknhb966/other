@@ -153,6 +153,7 @@ function spark(pos, dir, speed, color, opts = {}) {
     age: 0, life: opts.life || 1.6, color, change: opts.change || null, drag: opts.drag ?? 2.2, gravity: opts.gravity ?? 9,
     size: opts.size || .32, trail: opts.trail ?? 1, glitter: opts.glitter || false, child: opts.child || null,
     changeAt: opts.changeAt ?? .62, ember: opts.ember || false, nextEmber: .05, isEmber: false, boost: opts.boost ?? 18, // boost: 燃えはじめの明るさの上乗せ
+    dim: opts.dim ?? 1, // 濃さの倍率（ほとんど動かない火の粉は、同じ所に光が重なって太く白く見えるので薄くする）
   };
 }
 
@@ -208,7 +209,7 @@ function launch(x, y, kind, small) {
     shell(small ? 16 : 30, () => v * .35 * (.85 + Math.random() * .15), c2, { life: 1.2, gravity: g });
   } else if (kind === 'nishiki') { // 錦冠菊: 金色の長く燃える星が大きく開き、火の粉を落としながら冠のように垂れ下がる
     shell(small ? 60 : 125, () => v * (1.32 + Math.random() * .1), NISHIKI.head,
-      { change: NISHIKI.body, changeAt: .15, life: small ? 3.2 : 4.6, drag: 2.4, gravity: g * 2.4, trail: 1, size: .27, ember: true, boost: 8 });
+      { change: NISHIKI.body, changeAt: .15, life: small ? 3.2 : 4.6, drag: 2.4, gravity: g * 2.4, trail: 1, size: .22, ember: true, boost: 8, dim: .8 });
   } else {                        // 千輪: 小さな花がいくつも、少し遅れて開く
     shell(small ? 6 : 10, () => v * .6 * (.8 + Math.random() * .2), COLORS.gin, { life: .55, gravity: g * .5, trail: .6, child: pick(PALETTE) });
   }
@@ -233,7 +234,7 @@ function dropEmber(b, p, u) {
   // 色と明るさに少しばらつき（琥珀〜金色）。ときどき強く光る粒（8 回に 1 回）を混ぜて、細かくきらめかせる
   const bright = Math.random() < .125;
   const color = bright ? [40, 100, 74] : [27 + Math.random() * 10, 100, 45 + Math.random() * 16];
-  const q = spark([p.x, p.y, p.z], [0, 0, 0], 0, color, { life: .9 + Math.random() * .5, drag: 4, gravity: 9 * u * .5, trail: 0, size: bright ? .16 : .12, glitter: true, boost: 0 });
+  const q = spark([p.x, p.y, p.z], [0, 0, 0], 0, color, { life: .9 + Math.random() * .5, drag: 4, gravity: 9 * u * .5, trail: 0, size: bright ? .11 : .085, glitter: true, boost: 0, dim: bright ? .55 : .4 });
   q.vx = p.vx * .12 + (Math.random() - .5) * u * 2; q.vy = p.vy * .12; q.vz = p.vz * .12;
   q.sx = p.sx; q.sy = p.sy; q.isEmber = true;
   b.parts.push(q); particleCount++;
@@ -292,7 +293,7 @@ function frame(now) {
       const depth = Math.max(-1, Math.min(1, p.z / b.r)); // -1 = 手前 … 1 = 奥
       const c = p.change && t > p.changeAt ? p.change : p.color;
       let alpha = t < .1 ? 1 : Math.max(0, 1 - Math.pow((t - .1) / .9, 1.6));
-      alpha *= 1 - DEPTH_SHADE * (depth + 1) / 2; // 奥ほど暗く
+      alpha *= (1 - DEPTH_SHADE * (depth + 1) / 2) * p.dim; // 奥ほど暗く
       if ((p.glitter || (p.ember && t > .75)) && Math.random() < .35) alpha *= .25; // きらきら（錦冠菊の星は燃え尽きる前に）
       const light = Math.max(20, Math.min(96, c[2] + (1 - t) * p.boost - depth * 8)); // 手前ほど白っぽく
       ctx.strokeStyle = ctx.fillStyle = `hsla(${c[0]},${c[1]}%,${light}%,${alpha.toFixed(3)})`;
