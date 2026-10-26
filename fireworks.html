@@ -82,7 +82,7 @@ const MAX_PARTICLES = 4500;  // 同時に出す火の粉の上限（超えたら
 const IDLE_DEMO = 12;        // 誰も当てないとき、この秒数ごとに小さな花火を上げて誘う（0 = 上げない）
 const DEPTH = 3.2;           // 奥行きの付け方（花火の半径の何倍の距離から見ているか。小さいほど手前と奥の大きさの差が大きい）
 const DEPTH_SHADE = 0.55;    // 奥の火の粉をどれだけ暗くするか（0 = 暗くしない 〜 1）
-const EMBER_GAP = 0.1;       // 錦冠菊: 星がきらきらした火の粉を落とす間隔 [秒]（小さいほど尾が濃く、重くなる）
+const EMBER_GAP = 0.075;     // 錦冠菊: 星がきらきらした火の粉を落とす間隔 [秒]（小さいほど尾が濃く、重くなる）
 const VOLUME = 0.8;          // 音の大きさ（0〜1）
 
 const vmin = () => Math.min(innerWidth, innerHeight) / 100;
@@ -141,7 +141,7 @@ const COLORS = { // 紅・山吹・若竹・空・藤・銀（色相・彩度・
   beni: [352, 85, 62], yamabuki: [41, 92, 60], wakatake: [150, 60, 58], sora: [204, 95, 64], fuji: [266, 75, 72], gin: [215, 25, 92],
 };
 const PALETTE = Object.values(COLORS);
-const NISHIKI = { head: [42, 100, 68], body: [33, 100, 50], ember: [28, 100, 44] }; // 錦（金色）: 燃えはじめ・燃えている間・落とす火の粉
+const NISHIKI = { head: [42, 100, 68], body: [33, 100, 50] }; // 錦（金色）: 燃えはじめ・燃えている間（落とす火の粉の色は dropEmber）
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 let bursts = [];          // { parts: [火の粉], flash, x, y }
 let particleCount = 0;
@@ -207,8 +207,8 @@ function launch(x, y, kind, small) {
     for (const d of ringDirs(small ? 48 : 90)) parts.push(spark(O, d, v, c1, { life: 1.6, gravity: g * .6, trail: .8 }));
     shell(small ? 16 : 30, () => v * .35 * (.85 + Math.random() * .15), c2, { life: 1.2, gravity: g });
   } else if (kind === 'nishiki') { // 錦冠菊: 金色の長く燃える星が大きく開き、火の粉を落としながら冠のように垂れ下がる
-    shell(small ? 50 : 90, () => v * (1.15 + Math.random() * .1), NISHIKI.head,
-      { change: NISHIKI.body, changeAt: .15, life: small ? 3 : 4.2, drag: 2.4, gravity: g * 2.4, trail: 1, size: .34, ember: true, boost: 8 });
+    shell(small ? 60 : 125, () => v * (1.32 + Math.random() * .1), NISHIKI.head,
+      { change: NISHIKI.body, changeAt: .15, life: small ? 3.2 : 4.6, drag: 2.4, gravity: g * 2.4, trail: 1, size: .27, ember: true, boost: 8 });
   } else {                        // 千輪: 小さな花がいくつも、少し遅れて開く
     shell(small ? 6 : 10, () => v * .6 * (.8 + Math.random() * .2), COLORS.gin, { life: .55, gravity: g * .5, trail: .6, child: pick(PALETTE) });
   }
@@ -230,7 +230,10 @@ function addBurst(b) {
  */
 function dropEmber(b, p, u) {
   if (particleCount >= MAX_PARTICLES) return;
-  const q = spark([p.x, p.y, p.z], [0, 0, 0], 0, NISHIKI.ember, { life: .9 + Math.random() * .5, drag: 4, gravity: 9 * u * .5, trail: 0, size: .2, glitter: true, boost: 0 });
+  // 色と明るさに少しばらつき（琥珀〜金色）。ときどき強く光る粒（8 回に 1 回）を混ぜて、細かくきらめかせる
+  const bright = Math.random() < .125;
+  const color = bright ? [40, 100, 74] : [27 + Math.random() * 10, 100, 45 + Math.random() * 16];
+  const q = spark([p.x, p.y, p.z], [0, 0, 0], 0, color, { life: .9 + Math.random() * .5, drag: 4, gravity: 9 * u * .5, trail: 0, size: bright ? .16 : .12, glitter: true, boost: 0 });
   q.vx = p.vx * .12 + (Math.random() - .5) * u * 2; q.vy = p.vy * .12; q.vz = p.vz * .12;
   q.sx = p.sx; q.sy = p.sy; q.isEmber = true;
   b.parts.push(q); particleCount++;
