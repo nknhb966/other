@@ -14,7 +14,9 @@
   ・種類は 菊・牡丹・柳・輪・千輪・錦冠菊（にしきかむろぎく: 金色の長く燃える星が大きく開き、きらきらした火の粉を残しながら
     冠のように垂れ下がる）からおまかせ
   ・花火の数・火の粉の数には上限があり、超えたら古い花火から消す（重くならないように）
-  ・音は、本物の操作（クリック・タッチ・キー）があってから鳴る。右上のボタンで音のあり・なし（マウスでだけ切り替わる）
+  ・音は、本物の操作（クリック・タッチ・キー）があってから鳴る。右上のボタンで音のあり・なし
+    （PC ではマウスでだけ切り替わる。スマホ・タブレットではタッチでも切り替わる。センサーのタッチでは切り替わらない）
+  ・タイトル・説明は出さない（画面全体を夜空と花火に使う）
   ・外部 URL（本物のタッチ）とローカルファイル（プログラムが送るタッチ）の両方で動く。調整する数字はスクリプトの先頭
 -->
 <style>
@@ -24,8 +26,6 @@
     --moon: #e8edf5;        /* 月白（文字） */
     --moon-dim: #aab3cb;
     --yamabuki: #f2b736;    /* 山吹（ボタン・灯り） */
-    --title: 4vmin;
-    --text: 2.2vmin;
     --small: 1.7vmin;
     --serif: "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Noto Serif JP", "Noto Serif CJK JP", "BIZ UDPMincho", serif;
   }
@@ -37,16 +37,7 @@
   }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 
-  /* タイトルと説明: 左上に縦書きで小さく（タッチの邪魔をしない） */
-  .titles {
-    position: fixed; top: 3vmin; left: 3vmin; display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 1.4vmin;
-    writing-mode: horizontal-tb; pointer-events: none; color: var(--moon); font-family: var(--serif);
-  }
-  .titles h1, .titles p { writing-mode: vertical-rl; margin: 0; }
-  .titles h1 { font-size: var(--title); font-weight: 600; letter-spacing: .9vmin; line-height: 1; }
-  .titles p { font-size: var(--text); line-height: 1.75; letter-spacing: .3vmin; color: var(--moon-dim); }
-
-  /* 音のあり・なし: 右上の隅に小さく（本物のマウスでだけ切り替わる） */
+  /* 音のあり・なし: 右上の隅に小さく（PC では本物のマウスでだけ、スマホ・タブレットではタッチでも切り替わる） */
   .controls { position: fixed; top: 3vmin; right: 3vmin; display: flex; flex-direction: column; align-items: flex-end; gap: 1vmin; font-family: var(--serif); }
   .controls button {
     font: 500 var(--small)/1 var(--serif); color: var(--moon); background: rgba(11, 16, 54, .55); cursor: pointer;
@@ -55,15 +46,14 @@
   .controls button[aria-pressed="false"] { color: var(--moon-dim); border-color: rgba(170, 179, 203, .3); }
   .controls button:focus-visible { outline: .3vmin solid var(--yamabuki); outline-offset: .3vmin; }
   .status { width: 40vmin; text-align: right; font-size: var(--small); color: var(--yamabuki); min-height: 1.4em; pointer-events: none; }
+  /* スマホ・タブレット: 画面が小さいので、ボタンを指で押せる大きさ（高さ 44px 以上）にし、案内の文字も読める大きさにする */
+  html.mobile .controls button { min-width: 88px; min-height: 44px; font-size: max(var(--small), 15px); border-radius: 22px; }
+  html.mobile .status { width: auto; max-width: 60vw; font-size: max(var(--small), 12px); }
 </style>
 </head>
 <body>
 <canvas id="sky" aria-hidden="true"></canvas>
 <canvas id="fx" aria-hidden="true"></canvas>
-<div class="titles">
-  <h1>はなび</h1>
-  <p>ボールを当てると、<br>そこに花火があがります</p>
-</div>
 <div class="controls">
   <button id="sound" type="button" aria-pressed="true">音あり</button>
   <div class="status" id="status" role="status"></div>
@@ -85,10 +75,19 @@ const DEPTH_SHADE = 0.55;    // 奥の火の粉をどれだけ暗くするか（
 const EMBER_GAP = 0.0375;    // 錦冠菊: 星がきらきらした火の粉を落とす間隔 [秒]（小さいほど尾が濃く、数が増える）
 const EMBER_SIZE = 0.045;    // 錦冠菊: 落とす火の粉の大きさ（ほかの火の粉の太さと同じ単位。ときどき強く光る粒は 1.2 倍）
 const MAX_EMBERS = 8000;     // 錦冠菊の火の粉の上限（ほかの花火の火の粉とは別に数える。超えたら落とさない＝ほかの花火を消さない）
-const SENRIN_SIZE = 1.3;     // 千輪菊: 全体の広がりと、少し遅れて開く小さな花の半径の倍率（1 = 元の大きさ）
+const SENRIN_SIZE = 1.8;     // 千輪菊: 全体の広がりと、少し遅れて開く小さな花の半径の倍率（1 = 元の大きさ）
 const VOLUME = 0.8;          // 音の大きさ（0〜1）
 
 const vmin = () => Math.min(innerWidth, innerHeight) / 100;
+/**
+ * スマホ・タブレットか（音のボタンをタッチでも押せるようにする）。
+ * 外部 URL の操作用ブラウザは、タッチを送るためにタッチの端末のふりをする（hover・pointer の性質ではスマホと見分けられない）ので、
+ * 端末の情報で見分ける（Windows・Mac の Edge・Chrome はスマホにならない → センサーのタッチでは音が切り替わらない）
+ */
+const IS_MOBILE = navigator.userAgentData
+  ? navigator.userAgentData.mobile || /Android|iOS/i.test(navigator.userAgentData.platform || '')
+  : /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 0); // iPad はパソコン（Mac）の名前で名乗ることがある（Mac の Safari はタッチ点数 0）
+document.documentElement.classList.toggle('mobile', IS_MOBILE);
 
 // ============================================================================
 // 夜空（藍のグラデーション・星・山並みと家並みの影絵。大きさが変わったときだけ描き直す）
@@ -353,7 +352,7 @@ function frame(now) {
 // ============================================================================
 let audio = null, master = null, noise = null, soundOn = true;
 const recent = []; // 最近鳴らした時刻（一度にたくさん当たったときに、音が割れないように間引く）
-const LOCKED_TEXT = '画面を一度クリックすると音が出ます';
+const LOCKED_TEXT = IS_MOBILE ? '画面を一度タップすると音が出ます' : '画面を一度クリックすると音が出ます';
 function setupAudio() {
   const A = window.AudioContext || window.webkitAudioContext;
   if (!A) return;
@@ -396,14 +395,15 @@ function boom(x, big) {
 }
 
 // ============================================================================
-// 音のあり・なし（本物のマウスでだけ切り替わる。センサー・タッチでは変わらない）
+// 音のあり・なし（PC では本物のマウスでだけ切り替わる。スマホ・タブレットではタッチでも切り替わる。
+//   センサーのタッチ〔ローカルファイルはプログラムが送るタッチ、外部 URL は PC の操作用ブラウザへの本物のタッチ〕では変わらない）
 // ============================================================================
 const controls = document.querySelector('.controls');
 const soundBtn = document.getElementById('sound');
-const notRealMouse = (e) => !e.isTrusted || (e.pointerType && e.pointerType !== 'mouse'); // キーボードで押したとき（pointerType が空）は通す
-controls.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
-controls.addEventListener('pointerdown', (e) => { if (notRealMouse(e)) e.preventDefault(); }, true);
-controls.addEventListener('click', (e) => { if (notRealMouse(e)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+const buttonOK = (e) => e.isTrusted && (!e.pointerType || e.pointerType === 'mouse' || IS_MOBILE); // キーボードで押したとき（pointerType が空）は通す
+controls.addEventListener('touchstart', (e) => { if (!IS_MOBILE) e.preventDefault(); }, { passive: false });
+controls.addEventListener('pointerdown', (e) => { if (!buttonOK(e)) e.preventDefault(); }, true);
+controls.addEventListener('click', (e) => { if (!buttonOK(e)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
 soundBtn.addEventListener('click', () => {
   soundOn = !soundOn;
   soundBtn.setAttribute('aria-pressed', String(soundOn));
@@ -460,7 +460,9 @@ document.addEventListener('pointerdown', (e) => {
   const old = tracks.get(e.pointerId);
   if (old) { moveTrack(old, e.clientX, e.clientY); return; }
   const realMouse = e.isTrusted && e.pointerType === 'mouse';
-  if (realMouse && (e.button !== 0 || e.target.closest('.controls'))) return;
+  const onButton = e.target.closest && e.target.closest('.controls');
+  if (realMouse && (e.button !== 0 || onButton)) return;
+  if (onButton && IS_MOBILE && e.isTrusted) return; // スマホで音のボタンを押したタッチは、花火にしない
   e.preventDefault();
   const spot = { x: e.clientX, y: e.clientY, until: Infinity };
   const t = { x: e.clientX, y: e.clientY, spot };
