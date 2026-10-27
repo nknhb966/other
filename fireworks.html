@@ -85,6 +85,7 @@ const DEPTH_SHADE = 0.55;    // 奥の火の粉をどれだけ暗くするか（
 const EMBER_GAP = 0.0375;    // 錦冠菊: 星がきらきらした火の粉を落とす間隔 [秒]（小さいほど尾が濃く、数が増える）
 const EMBER_SIZE = 0.045;    // 錦冠菊: 落とす火の粉の大きさ（ほかの火の粉の太さと同じ単位。ときどき強く光る粒は 1.2 倍）
 const MAX_EMBERS = 8000;     // 錦冠菊の火の粉の上限（ほかの花火の火の粉とは別に数える。超えたら落とさない＝ほかの花火を消さない）
+const SENRIN_SIZE = 1.3;     // 千輪菊: 全体の広がりと、少し遅れて開く小さな花の半径の倍率（1 = 元の大きさ）
 const VOLUME = 0.8;          // 音の大きさ（0〜1）
 
 const vmin = () => Math.min(innerWidth, innerHeight) / 100;
@@ -217,7 +218,7 @@ function launch(x, y, kind, small) {
     shell(small ? 60 : 125, () => v * (1.32 + Math.random() * .1), NISHIKI.head,
       { change: NISHIKI.body, changeAt: .15, life: small ? 3.2 : 4.6, drag: 2.4, gravity: g * 2.4, trail: 1, size: .22, ember: true, boost: 8, dim: .8 });
   } else {                        // 千輪: 小さな花がいくつも、少し遅れて開く
-    shell(small ? 6 : 10, () => v * .6 * (.8 + Math.random() * .2), COLORS.gin, { life: .55, gravity: g * .5, trail: .6, child: pick(PALETTE) });
+    shell(small ? 6 : 10, () => v * .6 * SENRIN_SIZE * (.8 + Math.random() * .2), COLORS.gin, { life: .55, gravity: g * .5, trail: .6, child: pick(PALETTE) });
   }
   addBurst({ parts, x: X, y: Y, r: R, f: R * DEPTH, flash: 0, color: kind === 'nishiki' ? NISHIKI.body : c1, small, embers: kind === 'nishiki', emberN: 0 });
   boom(x, kind === 'senrin' ? .55 : small ? .35 : 1);
@@ -287,7 +288,7 @@ function frame(now) {
       p.vx *= f; p.vy = p.vy * f + p.gravity * dt; p.vz *= f;
       p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
       const t = p.age / p.life;
-      if (p.child && t >= 1) { born.push([b, p, p.child, b.r * .35]); continue; }
+      if (p.child && t >= 1) { born.push([b, p, p.child, b.r * .35 * SENRIN_SIZE]); continue; } // 千輪の小さな花（半径は SENRIN_SIZE 倍）
       if (p.ember && t > .06 && t < .9 && p.age >= p.nextEmber) { // 錦冠菊の星: ときどき火の粉を落とす
         p.nextEmber = p.age + EMBER_GAP * (.7 + Math.random() * .6);
         embers.push([b, p]);
